@@ -8,6 +8,8 @@ using REPL.TerminalMenus
 depots() = Base.DEPOT_PATH
 logdir() = joinpath(depots()[1], "logs")
 devdir() = get(ENV, "JULIA_PKG_DEVDIR", joinpath(homedir(), ".julia", "dev"))
+const CONTENT_SERVERS = String[]
+servers() = vcat(CONTENT_SERVERS, get(ENV, "JULIA_PKG_CONTENTSERVER", [] ))
 
 have_warned_session = false
 function print_first_command_header()

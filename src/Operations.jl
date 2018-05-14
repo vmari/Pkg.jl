@@ -7,7 +7,7 @@ import LibGit2
 import REPL
 using REPL.TerminalMenus
 using ..Types, ..GraphType, ..Resolve, ..Pkg2, ..BinaryProvider, ..GitTools
-import ..depots, ..devdir, ..Types.uuid_julia
+import ..depots, ..devdir, ..Types.uuid_julia, ..servers
 
 function find_installed(name::String, uuid::UUID, sha1::SHA1)
     slug = Base.version_slug(uuid, sha1)
@@ -358,49 +358,60 @@ function get_archive_url_for_version(url::String, ref)
     return nothing
 end
 
-# can be removed after https://github.com/JuliaLang/julia/pull/27036 
-get_archive_url_for_version(url::String, hash::SHA1) = get_archive_url_for_version(url::String, string(hash)) 
+# can be removed after https://github.com/JuliaLang/julia/pull/27036
+get_archive_url_for_version(url::String, hash::SHA1) = get_archive_url_for_version(url::String, string(hash))
 
 # Returns if archive successfully installed
 function install_archive(
-    urls::Vector{String},
-    hash::SHA1,
-    version_path::String
-)::Bool
-    for url in urls
-        archive_url = get_archive_url_for_version(url, hash)
+        repos::Vector{String},
+        hash::SHA1,
+        uuid::UUID,
+        version_path::String)::Bool
+    urls = String[]
+    for repo in repos
+        archive_url = get_archive_url_for_version(repo, hash)
         if archive_url != nothing
-            path = tempname() * randstring(6) * ".tar.gz"
-            url_success = true
-            cmd = BinaryProvider.gen_download_cmd(archive_url, path);
-            try
-                run(cmd, (devnull, devnull, devnull))
-            catch e
-                e isa InterruptException && rethrow(e)
-                url_success = false
-            end
-            url_success || continue
-            dir = joinpath(tempdir(), randstring(12))
-            mkpath(dir)
-            cmd = BinaryProvider.gen_unpack_cmd(path, dir);
-            # Might fail to extract an archive (Pkg3#190)
-            try
-                run(cmd, (devnull, devnull, devnull))
-            catch e
-                e isa InterruptException && rethrow(e)
-                @warn "failed to extract archive downloaded from $(archive_url)"
-                url_success = false
-            end
-            url_success || continue
-            dirs = readdir(dir)
-            # 7z on Win might create this spurious file
-            filter!(x -> x != "pax_global_header", dirs)
-            @assert length(dirs) == 1
-            !isdir(version_path) && mkpath(version_path)
-            mv(joinpath(dir, dirs[1]), version_path; force=true)
-            Base.rm(path; force = true)
-            return true
+            pushfirst!(urls, archive_url)
         end
+    end
+
+    for server in servers()
+        shash = string(hash)
+        pushfirst!(urls, "$server/$uuid/$shash.zip")
+    end
+
+    for url in urls
+        path = tempname() * randstring(6) * ".tar.gz"
+        url_success = true
+        cmd = BinaryProvider.gen_download_cmd(url, path);
+        try
+            run(cmd, (devnull, devnull, devnull))
+        catch e
+            e isa InterruptException && rethrow(e)
+            url_success = false
+        end
+        url_success || continue
+        dir = joinpath(tempdir(), randstring(12))
+        mkpath(dir)
+        cmd = BinaryProvider.gen_unpack_cmd(path, dir);
+        # Might fail to extract an archive (Pkg3#190)
+        try
+            run(cmd, (devnull, devnull, devnull))
+        catch e
+            e isa InterruptException && rethrow(e)
+            @warn "failed to extract archive downloaded from $(url)"
+            url_success = false
+        end
+        url_success || continue
+        println("Downloaded from $url")
+        dirs = readdir(dir)
+        # 7z on Win might create this spurious file
+        filter!(x -> x != "pax_global_header", dirs)
+        @assert length(dirs) == 1
+        !isdir(version_path) && mkpath(version_path)
+        mv(joinpath(dir, dirs[1]), version_path; force=true)
+        Base.rm(path; force = true)
+        return true
     end
     return false
 end
@@ -499,7 +510,7 @@ function apply_versions(ctx::Context, pkgs::Vector{PackageSpec}, hashes::Dict{UU
                     continue
                 end
                 try
-                    success = install_archive(urls[pkg.uuid], hashes[pkg.uuid], path)
+                    success = install_archive(urls[pkg.uuid], hashes[pkg.uuid], pkg.uuid, path)
                     put!(results, (pkg, success, path))
                 catch err
                     put!(results, (pkg, err, catch_backtrace()))
