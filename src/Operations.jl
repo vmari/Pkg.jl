@@ -23,9 +23,13 @@ function find_installed(name::String, uuid::UUID, sha1::SHA1)
     return abspath(depots1(), "packages", name, slug_default)
 end
 
-function load_versions(path::String)
+function load_versions(path::String; include_yanked = false)
     toml = parse_toml(path, "Versions.toml")
-    return Dict{VersionNumber, SHA1}(VersionNumber(ver) => SHA1(info["git-tree-sha1"]) for (ver, info) in toml)
+    yanked = [VersionNumber(v) for v in get(toml, "yanked", String[])]
+    delete!(toml, "yanked")
+    d = Dict{VersionNumber, SHA1}(VersionNumber(ver) => SHA1(info["git-tree-sha1"]) for (ver, info) in toml)
+    include_yanked || foreach(v -> delete!(d, v), yanked)
+    return d
 end
 
 function load_package_data(f::Base.Callable, path::String, versions)
@@ -66,7 +70,7 @@ end
 function set_maximum_version_registry!(env::EnvCache, pkg::PackageSpec)
     pkgversions = Set{VersionNumber}()
     for path in registered_paths(env, pkg.uuid)
-        pathvers = keys(load_versions(path))
+        pathvers = keys(load_versions(path); include_yanked = true) # ??
         union!(pkgversions, pathvers)
     end
     if length(pkgversions) == 0
@@ -255,7 +259,7 @@ function deps_graph(ctx::Context, uuid_to_name::Dict{UUID,String}, reqs::Require
                 end
             else
                 for path in registered_paths(ctx.env, uuid)
-                    version_info = load_versions(path)
+                    version_info = load_versions(path; include_yanked = false)
                     versions = sort!(collect(keys(version_info)))
                     deps_data = load_package_data_raw(UUID, joinpath(path, "Deps.toml"))
                     compat_data = load_package_data_raw(VersionSpec, joinpath(path, "Compat.toml"))
@@ -403,7 +407,7 @@ function version_data!(ctx::Context, pkgs::Vector{PackageSpec})
             end
             repo = info["repo"]
             repo in clones[uuid] || push!(clones[uuid], repo)
-            vers = load_versions(path)
+            vers = load_versions(path; include_yanked = true)
             if haskey(vers, ver)
                 h = vers[ver]
                 if haskey(hashes, uuid)
